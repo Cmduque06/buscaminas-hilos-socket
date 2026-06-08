@@ -1,0 +1,98 @@
+{
+  "beginner": [
+    {
+      "name": "Angel",
+      "time": 37,
+      "date": "07/06/2026"
+    },
+    {
+      "name": "Ana",
+      "time": 38,
+      "date": "07/06/2026"
+    },
+    {
+      "name": "Mario",
+      "time": 44,
+      "date": "08/06/2026"
+    },
+    {
+      "name": "Luis",
+      "time": 45,
+      "date": "06/06/2026"
+    },
+    {
+      "name": "Cmd",
+      "time": 52,
+      "date": "05/06/2026"
+    },
+    {
+      "name": "Camilo",
+      "time": 56,
+      "date": "07/06/2026"
+    },
+    {
+      "name": "Marta",
+      "time": 64,
+      "date": "07/06/2026"
+    },
+    {
+      "name": "Diego",
+      "time": 78,
+      "date": "08/06/2026"
+    }
+  ],
+  "intermediate": [
+    {
+      "name": "Sofia",
+      "time": 219,
+      "date": "07/06/2026"
+    },
+    {
+      "name": "Carlos",
+      "time": 257,
+      "date": "05/06/2026"
+    },
+    {
+      "name": "Valen",
+      "time": 304,
+      "date": "07/06/2026"
+    },
+    {
+      "name": "Nico",
+      "time": 356,
+      "date": "08/06/2026"
+    },
+    {
+      "name": "Laura",
+      "time": 411,
+      "date": "08/06/2026"
+    }
+  ],
+  "expert": [
+    {
+      "name": "Andres",
+      "time": 668,
+      "date": "05/06/2026"
+    },
+    {
+      "name": "Paula",
+      "time": 742,
+      "date": "07/06/2026"
+    },
+    {
+      "name": "Mateo",
+      "time": 815,
+      "date": "07/06/2026"
+    },
+    {
+      "name": "Camila",
+      "time": 930,
+      "date": "08/06/2026"
+    },
+    {
+      "name": "Juan",
+      "time": 1044,
+      "date": "06/06/2026"
+    }
+  ]
+}
