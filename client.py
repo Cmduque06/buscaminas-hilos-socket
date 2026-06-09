@@ -669,6 +669,9 @@ class ConfigWindow:
             if rows < 2 or cols < 2:
                 messagebox.showerror("Error", "El tablero debe ser mínimo 2x2.")
                 return
+            if rows > 20  or cols > 60:
+                messagebox.showerror("Error", "El tamaño maximo de tablero disponible es de 20x60.")
+                return
             if mines < 1 or mines >= rows * cols:
                 messagebox.showerror("Error",
                     f"Las minas deben estar entre 1 y {rows*cols-1}.")
