@@ -1,14 +1,9 @@
 {
   "beginner": [
     {
-      "name": "Angel",
-      "time": 37,
-      "date": "07/06/2026"
-    },
-    {
-      "name": "Ana",
-      "time": 38,
-      "date": "07/06/2026"
+      "name": "Juan",
+      "time": 42,
+      "date": "09/06/2026"
     },
     {
       "name": "Mario",
@@ -26,6 +21,11 @@
       "date": "05/06/2026"
     },
     {
+      "name": "abc",
+      "time": 54,
+      "date": "09/06/2026"
+    },
+    {
       "name": "Camilo",
       "time": 56,
       "date": "07/06/2026"
@@ -34,11 +34,6 @@
       "name": "Marta",
       "time": 64,
       "date": "07/06/2026"
-    },
-    {
-      "name": "Diego",
-      "time": 78,
-      "date": "08/06/2026"
     }
   ],
   "intermediate": [

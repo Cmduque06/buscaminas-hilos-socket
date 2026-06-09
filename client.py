@@ -2,6 +2,8 @@ import socket
 import json
 import time
 import os
+import threading
+import uuid
 import tkinter as tk
 from tkinter import messagebox
 from datetime import datetime
@@ -9,6 +11,7 @@ from datetime import datetime
 HOST        = '127.0.0.1'
 PORT        = 5050
 SCORES_FILE = "scores.json"
+CLIENT_ID   = uuid.uuid4().hex
 
 NUMBER_COLORS = {
     1: "#1565C0", 2: "#2E7D32", 3: "#C62828", 4: "#283593",
@@ -56,18 +59,50 @@ def _recvall(sock, n):
 class ScoreManager:
 
     @staticmethod
+    def _empty_scores():
+        return {"beginner": [], "intermediate": [], "expert": []}
+
+    @staticmethod
+    def _request(data):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.connect((HOST, PORT))
+            send_msg(sock, data)
+            return recv_msg(sock)
+        finally:
+            sock.close()
+
+    @staticmethod
     def load():
         """Devuelve el diccionario completo de puntajes desde el archivo."""
+        try:
+            resp = ScoreManager._request({"type": "scores_get"})
+            if resp and resp.get("type") == "scores_data":
+                return resp["scores"]
+        except Exception:
+            pass
+
         if os.path.exists(SCORES_FILE):
             try:
                 with open(SCORES_FILE, 'r', encoding='utf-8') as f:
                     return json.load(f)
             except Exception:
                 pass
-        return {"beginner": [], "intermediate": [], "expert": []}
+        return ScoreManager._empty_scores()
 
     @staticmethod
     def save_score(level_key, name, elapsed_secs):
+        resp = ScoreManager._request({
+            "type": "score_submit",
+            "level": level_key,
+            "name": name,
+            "time": elapsed_secs,
+            "client_id": CLIENT_ID,
+        })
+        if not resp or resp.get("type") != "score_saved":
+            raise RuntimeError("No se pudo guardar el puntaje.")
+        return resp
+
         """
         Agrega un puntaje al nivel correspondiente, ordena de menor a mayor
         tiempo y guarda solo el top 10.
@@ -83,6 +118,112 @@ class ScoreManager:
         data[level_key] = data[level_key][:10]
         with open(SCORES_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
+
+
+class ScoreAlertListener:
+    def __init__(self, root):
+        self.root = root
+        self.sock = None
+        self.running = False
+        self.closed = False
+        self._start()
+
+    def _start(self):
+        if self.closed or self.running:
+            return
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.connect((HOST, PORT))
+            send_msg(self.sock, {
+                "type": "scores_subscribe",
+                "client_id": CLIENT_ID,
+            })
+            self.running = True
+            threading.Thread(target=self._listen, daemon=True).start()
+        except Exception:
+            self.sock = None
+            self._retry_later()
+
+    def _retry_later(self):
+        if self.closed:
+            return
+        try:
+            self.root.after(2000, self._start)
+        except tk.TclError:
+            self.closed = True
+
+    def _listen(self):
+        while self.running:
+            try:
+                msg = recv_msg(self.sock)
+            except Exception:
+                break
+            if not msg:
+                break
+            if msg.get("type") == "scores_update" and msg.get("show_popup"):
+                try:
+                    self.root.after(0, lambda m=msg: self._show_popup(m))
+                except tk.TclError:
+                    break
+        self.running = False
+        if not self.closed:
+            self._retry_later()
+
+    def _show_popup(self, msg):
+        if not self.root.winfo_exists():
+            return
+
+        new_score = msg.get("new_score", {})
+        entry = new_score.get("entry", {})
+        position = new_score.get("position")
+        level = new_score.get("level")
+        if not position:
+            return
+
+        popup = tk.Toplevel(self.root)
+        popup.title("Nuevo top 5")
+        popup.resizable(False, False)
+        popup.configure(bg="#16213e")
+        popup.attributes("-topmost", True)
+
+        level_name = LEVEL_NAMES.get(level, "Ranking")
+        tk.Label(
+            popup,
+            text="Nuevo puntaje destacado",
+            font=("Segoe UI", 11, "bold"),
+            bg="#16213e", fg="#FFD700"
+        ).pack(padx=18, pady=(14, 4))
+        tk.Label(
+            popup,
+            text=f"{entry.get('name', 'Jugador')} entro al puesto #{position} en {level_name}",
+            font=("Segoe UI", 10),
+            bg="#16213e", fg="white"
+        ).pack(padx=18, pady=(0, 12))
+        tk.Button(
+            popup, text="Cerrar",
+            font=("Segoe UI", 9, "bold"),
+            bg="#e94560", fg="white",
+            activebackground="#c73652", activeforeground="white",
+            relief="flat", cursor="hand2",
+            command=popup.destroy
+        ).pack(pady=(0, 14))
+
+        popup.update_idletasks()
+        w = popup.winfo_reqwidth()
+        h = popup.winfo_reqheight()
+        sw = popup.winfo_screenwidth()
+        popup.geometry(f"{w}x{h}+{sw - w - 28}+28")
+        popup.after(10000, lambda: popup.destroy() if popup.winfo_exists() else None)
+
+    def close(self):
+        self.closed = True
+        self.running = False
+        if self.sock:
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+            self.sock = None
 
 
 class BuscaminasClient:
@@ -185,15 +326,21 @@ class WinDialog:
 class ScoreWindow:
     def __init__(self, parent, initial_level="beginner"):
         self.level_btns = {}
+        self.current_level = initial_level
+        self.scores = ScoreManager.load()
+        self.score_sock = None
+        self.listening = False
 
         self.window = tk.Toplevel(parent)
         self.window.title("Tabla de Puntajes")
         self.window.resizable(False, False)
         self.window.configure(bg="#1a1a2e")
         self.window.grab_set()
+        self.window.protocol("WM_DELETE_WINDOW", self._close)
 
         self._build_ui()
         self._show_level(initial_level)
+        self._start_score_listener()
         self._center()
 
     def _center(self):
@@ -239,11 +386,98 @@ class ScoreWindow:
             activebackground="#1a4a80", activeforeground="white",
             relief="flat", cursor="hand2",
             padx=16, pady=6,
-            command=self.window.destroy
+            command=self._close
         ).pack(pady=(0, 20))
+
+    def _start_score_listener(self):
+        try:
+            self.score_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.score_sock.connect((HOST, PORT))
+            send_msg(self.score_sock, {
+                "type": "scores_subscribe",
+                "client_id": CLIENT_ID,
+            })
+            self.listening = True
+            threading.Thread(target=self._listen_scores, daemon=True).start()
+        except Exception:
+            self.score_sock = None
+
+    def _listen_scores(self):
+        while self.listening:
+            try:
+                msg = recv_msg(self.score_sock)
+            except Exception:
+                break
+            if not msg:
+                break
+            try:
+                self.window.after(0, lambda m=msg: self._handle_score_message(m))
+            except tk.TclError:
+                break
+        self.listening = False
+
+    def _handle_score_message(self, msg):
+        if not self.window.winfo_exists():
+            return
+        if msg.get("type") not in ("scores_data", "scores_update"):
+            return
+
+        self.scores = msg.get("scores", ScoreManager._empty_scores())
+        self._show_level(self.current_level)
+
+    def _show_score_popup(self, name, position, level):
+        if not position:
+            return
+
+        popup = tk.Toplevel(self.window)
+        popup.title("Nuevo top 5")
+        popup.resizable(False, False)
+        popup.configure(bg="#16213e")
+        popup.attributes("-topmost", True)
+
+        level_name = LEVEL_NAMES.get(level, "Ranking")
+        tk.Label(
+            popup,
+            text="Nuevo puntaje destacado",
+            font=("Segoe UI", 11, "bold"),
+            bg="#16213e", fg="#FFD700"
+        ).pack(padx=18, pady=(14, 4))
+        tk.Label(
+            popup,
+            text=f"{name} entro al puesto #{position} en {level_name}",
+            font=("Segoe UI", 10),
+            bg="#16213e", fg="white"
+        ).pack(padx=18, pady=(0, 12))
+        tk.Button(
+            popup, text="Cerrar",
+            font=("Segoe UI", 9, "bold"),
+            bg="#e94560", fg="white",
+            activebackground="#c73652", activeforeground="white",
+            relief="flat", cursor="hand2",
+            command=popup.destroy
+        ).pack(pady=(0, 14))
+
+        popup.update_idletasks()
+        w = popup.winfo_reqwidth()
+        h = popup.winfo_reqheight()
+        x = self.window.winfo_rootx() + self.window.winfo_width() - w - 16
+        y = self.window.winfo_rooty() + 16
+        popup.geometry(f"{w}x{h}+{x}+{y}")
+        popup.after(3000, lambda: popup.destroy() if popup.winfo_exists() else None)
+
+    def _close(self):
+        self.listening = False
+        if self.score_sock:
+            try:
+                self.score_sock.close()
+            except Exception:
+                pass
+            self.score_sock = None
+        self.window.destroy()
 
 
     def _show_level(self, key):
+        self.current_level = key
         for k, btn in self.level_btns.items():
             btn.config(
                 bg="#e94560" if k == key else "#0f3460",
@@ -253,7 +487,7 @@ class ScoreWindow:
         for w in self.table_frame.winfo_children():
             w.destroy()
 
-        scores = ScoreManager.load().get(key, [])
+        scores = self.scores.get(key, [])
 
         headers = ("#",  "Nombre",  "Tiempo", "Fecha")
         widths  = (4,    16,         8,        10)
@@ -311,10 +545,12 @@ class ConfigWindow:
         self.diff_btns     = {}
         self.custom_frame  = None
         self.play_anchor   = None
+        self.score_alert   = ScoreAlertListener(root)
 
         self.root.title("Buscaminas")
         self.root.resizable(False, False)
         self.root.configure(bg="#1a1a2e")
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_ui()
         self._select("beginner")
 
@@ -461,6 +697,10 @@ class ConfigWindow:
         else:
             messagebox.showerror("Error", "El servidor no pudo iniciar la partida.")
             client.disconnect()
+
+    def _on_close(self):
+        self.score_alert.close()
+        self.root.destroy()
 
 
 class GameWindow:
@@ -639,8 +879,14 @@ class GameWindow:
             if self.level_key:
                 def handle_win():
                     def on_name_saved(name):
-                        ScoreManager.save_score(self.level_key, name, elapsed)
-                        ScoreWindow(self.window, self.level_key)
+                        try:
+                            ScoreManager.save_score(self.level_key, name, elapsed)
+                            ScoreWindow(self.window, self.level_key)
+                        except Exception as exc:
+                            messagebox.showerror(
+                                "Error",
+                                f"No se pudo guardar el puntaje.\n\n{exc}"
+                            )
                     WinDialog(self.window, elapsed, self.level_key, on_name_saved)
                 self.window.after(150, handle_win)
             else:

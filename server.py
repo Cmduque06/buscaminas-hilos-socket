@@ -2,9 +2,15 @@ import socket
 import threading
 import random
 import json
+from datetime import datetime
 
 HOST = '127.0.0.1'
 PORT = 5050
+SCORES_FILE = "scores.json"
+LEVEL_KEYS = ("beginner", "intermediate", "expert")
+score_lock = threading.Lock()
+subscribers_lock = threading.Lock()
+score_subscribers = {}
 
 
 def send_msg(sock, data):
@@ -29,6 +35,82 @@ def _recvall(sock, n):
             return None
         buf += chunk
     return buf
+
+
+class ScoreManager:
+
+    @staticmethod
+    def load():
+        try:
+            with open(SCORES_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception:
+            data = {}
+        for key in LEVEL_KEYS:
+            data.setdefault(key, [])
+        return data
+
+    @staticmethod
+    def save_score(level_key, name, elapsed_secs):
+        entry = {
+            "name": name.strip() or "Anónimo",
+            "time": elapsed_secs,
+            "date": datetime.now().strftime("%d/%m/%Y"),
+        }
+
+        with score_lock:
+            data = ScoreManager.load()
+            data[level_key].append(entry)
+            data[level_key].sort(key=lambda x: x["time"])
+            kept_scores = data[level_key][:10]
+            position = next(
+                (i + 1 for i, score in enumerate(kept_scores) if score is entry),
+                None
+            )
+            data[level_key] = kept_scores
+
+            with open(SCORES_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+
+        return data, entry, position
+
+
+def add_score_subscriber(client_id, conn):
+    with subscribers_lock:
+        score_subscribers[conn] = client_id
+
+
+def remove_score_subscriber(conn):
+    with subscribers_lock:
+        score_subscribers.pop(conn, None)
+
+
+def broadcast_score_update(data, entry, level_key, position, source_id):
+    payload = {
+        "type": "scores_update",
+        "scores": data,
+        "new_score": {
+            "level": level_key,
+            "entry": entry,
+            "position": position,
+        }
+    }
+    stale = []
+    with subscribers_lock:
+        targets = list(score_subscribers.items())
+
+    for conn, client_id in targets:
+        try:
+            message = dict(payload)
+            message["show_popup"] = (
+                position is not None and position <= 5 and client_id != source_id
+            )
+            send_msg(conn, message)
+        except Exception:
+            stale.append(conn)
+
+    for conn in stale:
+        remove_score_subscriber(conn)
 
 
 class BuscaminasGame:
@@ -119,6 +201,7 @@ class BuscaminasGame:
 def handle_client(conn, addr):
     print(f"[CONEXIÓN]    {addr} conectado.")
     game = None
+    subscribed_to_scores = False
     try:
         while True:
             msg = recv_msg(conn)
@@ -126,7 +209,43 @@ def handle_client(conn, addr):
                 break
             t = msg.get("type")
 
-            if t == "init":
+            if t == "scores_get":
+                send_msg(conn, {
+                    "type": "scores_data",
+                    "scores": ScoreManager.load(),
+                })
+
+            elif t == "scores_subscribe":
+                add_score_subscriber(msg.get("client_id"), conn)
+                subscribed_to_scores = True
+                send_msg(conn, {
+                    "type": "scores_data",
+                    "scores": ScoreManager.load(),
+                })
+                print(f"[{addr}]  SUSCRITO A PUNTAJES.")
+
+            elif t == "score_submit":
+                level_key = msg.get("level")
+                if level_key not in LEVEL_KEYS:
+                    send_msg(conn, {"type": "score_error", "message": "Nivel invalido."})
+                    continue
+
+                data, entry, position = ScoreManager.save_score(
+                    level_key,
+                    msg.get("name", ""),
+                    int(msg.get("time", 0))
+                )
+                send_msg(conn, {
+                    "type": "score_saved",
+                    "scores": data,
+                    "position": position,
+                })
+                broadcast_score_update(
+                    data, entry, level_key, position, msg.get("client_id")
+                )
+                print(f"[{addr}]  PUNTAJE {level_key}: {entry['name']} #{position}.")
+
+            elif t == "init":
                 rows       = msg["rows"]
                 cols       = msg["cols"]
                 mines      = msg["mines"]
@@ -162,6 +281,8 @@ def handle_client(conn, addr):
     except Exception as e:
         print(f"[ERROR]       {addr}: {e}")
     finally:
+        if subscribed_to_scores:
+            remove_score_subscriber(conn)
         conn.close()
         print(f"[DESCONEXIÓN] {addr} desconectado.")
 
